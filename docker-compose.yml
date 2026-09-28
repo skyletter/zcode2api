@@ -1,8 +1,8 @@
 # NAS 部署：docker compose up -d（自动拉取 GitHub Actions 构建的镜像）
 services:
-  traework2api:
+  zcode2api:
     image: ghcr.io/skyletter/zcode2api:latest
-    container_name: traework2api
+    container_name: zcode2api
     restart: unless-stopped
     pull_policy: always
     ports:
