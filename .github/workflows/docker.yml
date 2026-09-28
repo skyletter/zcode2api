@@ -32,8 +32,23 @@ jobs:
           context: .
           platforms: linux/amd64
           push: true
+          load: true
           tags: |
             ghcr.io/${{ github.repository }}:latest
             ghcr.io/${{ github.repository }}:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Smoke test (启动容器并探活 /meta)
+        run: |
+          docker run -d --name zcode-smoke -p 3000:3000 ghcr.io/${{ github.repository }}:latest
+          ok=0
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:3000/meta >/dev/null; then ok=1; break; fi
+            sleep 2
+          done
+          echo "--- container logs ---"
+          docker logs zcode-smoke 2>&1 | tail -n 40
+          docker rm -f zcode-smoke >/dev/null
+          if [ "$ok" != "1" ]; then echo "smoke test FAILED"; exit 1; fi
+          echo "smoke test PASSED"
