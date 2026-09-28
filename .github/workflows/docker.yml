@@ -16,6 +16,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Lint add-account.sh
+        run: bash -n add-account.sh && echo "add-account.sh syntax OK"
+
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v3
 
