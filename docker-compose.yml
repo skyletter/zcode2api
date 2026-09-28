@@ -1,0 +1,19 @@
+# NAS 部署：docker compose up -d（自动拉取 GitHub Actions 构建的镜像）
+services:
+  traework2api:
+    image: ghcr.io/skyletter/zcode2api:latest
+    container_name: traework2api
+    restart: unless-stopped
+    pull_policy: always
+    ports:
+      - "3000:3000"
+    environment:
+      ZCODE_HOST: "0.0.0.0"
+      ZCODE_PORT: "3000"
+      ZCODE_DATA_DIR: "/data"
+      # 后台管理密码：仅首次启动生效（写入数据库），之后在后台页面修改
+      ZCODE_ADMIN_KEY: "change-me-please"
+      # 网关 API Key：留空 = 不校验（生产/局域网建议设置，客户端用它访问）
+      ZCODE_GATEWAY_KEY: ""
+    volumes:
+      - ./data:/data
