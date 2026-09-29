@@ -23,6 +23,7 @@ from ..claim import (
 from ..claim import claim as do_claim
 from ..install import run_install_sequence_for_account
 from ..models import PROVIDERS, Status
+from ..oauth import PROVIDERS as OAUTH_PROVIDERS
 from ..oauth import ZaiAuthFlow
 from ..quota import fetch_quota, refresh_accounts
 from ..store import store
@@ -120,7 +121,7 @@ async def edit_account(account_id: str, payload: dict = Body(...)):
     secret = payload.get("token") or payload.get("secret")
     if secret:
         secret = secret.strip()
-        is_jwt = secret.count(".") == 2 and acc.provider == "zai"
+        is_jwt = secret.count(".") == 2 and acc.provider in PROVIDERS
         if is_jwt:
             acc.mode = "jwt"
             acc.jwt_token = secret
@@ -174,7 +175,8 @@ async def rotate_fingerprint(account_id: str):
 async def refresh(payload: dict = Body(default=None)):
     payload = payload or {}
     if payload.get("all"):
-        pool = [a for a in store.list_accounts("zai") if a.mode == "jwt"]
+        # billing 端点按 JWT 归属，zai / bigmodel 的 JWT 账号同源
+        pool = [a for a in store.list_accounts() if a.mode == "jwt"]
     else:
         ids = set(payload.get("ids") or [])
         pool = [a for a in store.list_accounts() if a.id in ids and a.mode == "jwt"]
@@ -226,21 +228,26 @@ def _login_gc() -> None:
 
 @router.post("/login/start")
 async def login_start(payload: dict = Body(default=None)):
-    """发起 Z.AI OAuth，返回授权链接供前端展示。
+    """发起 OAuth（zai / bigmodel），返回授权链接供前端展示。
 
-    payload 可选 {"label": "acct-1"} —— 作为账号名前缀入池，便于多号识别。
+    payload 可选 {"label": "acct-1", "provider": "zai"} —— label 作为账号名前缀
+    入池；provider 缺省 zai（国际站），bigmodel 为国内智谱（同一 server-mediated
+    轮询流程，无需回调地址）。
     """
     payload = payload or {}
     label = (payload.get("label") or "").strip()[:32]
+    provider = (payload.get("provider") or "zai").strip()
+    if provider not in OAUTH_PROVIDERS:
+        raise HTTPException(400, f"不支持的 provider: {provider}")
     _login_gc()
-    flow = ZaiAuthFlow()
+    flow = ZaiAuthFlow(provider)
     try:
         flow_id, authorize_url = await flow.init()
     except Exception as err:  # noqa: BLE001
         logs.warn("oauth", f"登录初始化失败: {type(err).__name__}: {err}")
         raise HTTPException(502, f"登录初始化失败: {err}") from err
     _login_flows[flow_id] = {"flow": flow, "created": time.time(), "label": label}
-    logs.info("oauth", f"发起登录 flow_id={flow_id} label={label or '-'}")
+    logs.info("oauth", f"发起登录 flow_id={flow_id} provider={provider} label={label or '-'}")
     return {
         "flow_id": flow_id,
         "authorize_url": authorize_url,
@@ -288,18 +295,21 @@ async def login_poll(flow_id: str):
     _login_flows.pop(flow_id, None)
 
     # JWT 先入池并立刻 ready；兑换 API Key / 额度刷新改后台，避免卡住前端下一轮 poll。
+    # 凭据在 data.zai / data.bigmodel 子对象；zcode JWT 恒为 data.token。
+    provider = flow.provider
     zcode_jwt = data.get("token")
-    access_token = (data.get("zai") or {}).get("access_token")
+    access_token = (data.get(provider) or {}).get("access_token")
     label = entry.get("label") or "oauth-login"
     account = None
     if zcode_jwt:
-        account = store.add_account("zai", label, zcode_jwt)
-    elif access_token:
+        account = store.add_account(provider, label, zcode_jwt)
+    elif access_token and provider == "zai":
+        # API Key 兑换链仅 zai 通道存在（bigmodel 无对应兑换端点）
         try:
             api_key = await asyncio.wait_for(
                 flow.exchange_api_key(access_token), timeout=LOGIN_EXCHANGE_TIMEOUT
             )
-            account = store.add_account("zai", label, api_key)
+            account = store.add_account(provider, label, api_key)
         except Exception as err:  # noqa: BLE001
             logs.warn("oauth", f"无 JWT 时兑换 API Key 失败: {err}")
 
@@ -310,7 +320,8 @@ async def login_poll(flow_id: str):
     if account.mode == "jwt":
         _schedule_auto_claim(account)  # 授权完成即激活+自动领取，入池即吃满活动
     _schedule_install(account)  # 按账号安装序（幂等；apiKey 账号同样安装）
-    _schedule_login_followup(account, flow, access_token if zcode_jwt else None)
+    _schedule_login_followup(account, flow,
+                             access_token if (zcode_jwt and provider == "zai") else None)
     logs.info("oauth", f"授权成功入池 {account.name} ({account.id}) mode={account.mode}")
     return {"status": "ready", "account": account.public_view()}
 
@@ -324,7 +335,7 @@ def _schedule_login_followup(account, flow, access_token: str | None) -> None:
     """ready 后后台兑换 API Key 并刷新额度；失败只打日志，不影响已入池的 JWT。"""
 
     async def _job():
-        live = store.find("zai", account.id)
+        live = store.find(account.provider, account.id)
         if live is None:
             return
         if access_token:
@@ -332,14 +343,14 @@ def _schedule_login_followup(account, flow, access_token: str | None) -> None:
                 api_key = await asyncio.wait_for(
                     flow.exchange_api_key(access_token), timeout=LOGIN_EXCHANGE_TIMEOUT
                 )
-                live = store.find("zai", account.id)
+                live = store.find(account.provider, account.id)
                 if live is None:
                     return
                 live.api_key = api_key
                 store.update_account(live)
             except Exception as err:  # noqa: BLE001 - 兑换失败不影响 JWT 已入池
                 logs.warn("oauth", f"账号 {account.name} 兑换 API Key 失败: {err}")
-        live = store.find("zai", account.id)
+        live = store.find(account.provider, account.id)
         if live is None:
             return
         if live.mode == "jwt":
@@ -381,7 +392,8 @@ def _schedule_auto_claim(account) -> None:
 
 
 def _jwt_accounts(account_ids: list[str] | None) -> list:
-    accounts = store.list_accounts("zai")
+    # zai / bigmodel 的 JWT 账号同走 zcode Plan 通道，领取/预览一并覆盖
+    accounts = store.list_accounts()
     if account_ids:
         wanted = set(account_ids)
         accounts = [a for a in accounts if a.id in wanted]
@@ -522,7 +534,7 @@ async def claim_manual(payload: dict = Body(...)):
     if not account_id:
         raise HTTPException(400, "缺少 account_id")
 
-    acc = store.find("zai", account_id)
+    acc = store.find_any(account_id)
     if not acc or acc.mode != "jwt" or not acc.jwt_token:
         raise HTTPException(404, "JWT 账号不存在")
     blocked = billing_block_reason(acc)
@@ -611,7 +623,7 @@ async def import_accounts(payload: dict = Body(...)):
     existing = {a.id for a in store.list_accounts()}
     count = store.import_accounts(payload)
     # 导入的新账号：安装序（幂等）+ JWT 账号激活+自动领取（幂等：重复 token 不新增）
-    imported = [a for a in store.list_accounts("zai") if a.id not in existing]
+    imported = [a for a in store.list_accounts() if a.id not in existing]
     for acc in imported:
         _schedule_install(acc)
         if acc.mode == "jwt":

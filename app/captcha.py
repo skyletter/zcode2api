@@ -109,7 +109,7 @@ class CaptchaManager:
         """
         return any(
             a.allows_billing() and a.is_selectable()
-            for a in store.list_accounts("zai")
+            for a in store.list_accounts()
         )
 
     async def _refill_loop(self) -> None:

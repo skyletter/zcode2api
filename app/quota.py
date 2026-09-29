@@ -257,8 +257,9 @@ class QuotaMonitor:
             interval = store.quota_refresh_interval()  # 实时读取设置，改后即生效
             if interval > 0:
                 try:
+                    # billing 端点按 JWT 归属，zai / bigmodel 的 JWT 账号同源
                     accounts = [
-                        a for a in store.list_accounts("zai")
+                        a for a in store.list_accounts()
                         if a.mode == "jwt" and a.allows_billing()
                     ]
                     if accounts:

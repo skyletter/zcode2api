@@ -367,6 +367,11 @@ def build_app() -> FastAPI:
     async def oauth_init(request: Request) -> Response:
         body = await request.body()
         _record("POST", request.url.path, {k.lower(): v for k, v in request.headers.items()}, body)
+        # 记录本次流程的 provider（zai / bigmodel）：poll ready 时按它挂凭据子对象
+        try:
+            app.state.oauth_provider = (json.loads(body or b"{}") or {}).get("provider") or "zai"
+        except ValueError:
+            app.state.oauth_provider = "zai"
         n = app.state.oauth_init_count = getattr(app.state, "oauth_init_count", 0) + 1
         return Response(json.dumps({
             "data": {"flow_id": f"mock-flow-{n}", "authorize_url": "https://mock.example/authorize"}
@@ -393,8 +398,11 @@ def build_app() -> FastAPI:
             data.update({
                 "status": "ready",
                 "token": "mock-gateway-jwt-header.eyJzdWIiOiJtb2NrIn0.sig",
-                "zai": {"access_token": "mock-access-token"},
             })
+            # 真实上游按登录来源把 access_token 挂在 data.zai / data.bigmodel 下
+            data[getattr(app.state, "oauth_provider", "zai") or "zai"] = {
+                "access_token": "mock-access-token",
+            }
         return Response(json.dumps({"data": data}), media_type="application/json")
 
     @app.post("/api/auth/z/login")

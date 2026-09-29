@@ -3,7 +3,7 @@
 
 用法:
   python cli.py serve [--port 3000]        启动网关 + 后台 UI
-  python cli.py login zai [--no-browser]   通过 OAuth 登录 Z.AI 并自动加入账号池
+  python cli.py login zai|bigmodel [--no-browser]  通过 OAuth 登录并自动加入账号池
   python cli.py add-account zai <name> <jwt|key>   添加轮询账号
   python cli.py accounts [zai|bigmodel]    查看账号列表
   python cli.py remove-account <provider> <id|name>
@@ -21,6 +21,7 @@ import json
 import sys
 
 from app import settings
+from app.oauth import PROVIDERS as OAUTH_PROVIDERS
 from app.oauth import ZaiAuthFlow
 from app.quota import fetch_quota
 from app.store import store
@@ -54,17 +55,18 @@ def cmd_serve(args: list[str]) -> None:
 
 # ── login ────────────────────────────────────────────────────────────────────
 async def cmd_login(args: list[str]) -> None:
-    if not args or args[0] != "zai":
-        print(c("目前仅支持: python cli.py login zai", "red"))
+    provider = args[0] if args and args[0] in OAUTH_PROVIDERS else None
+    if provider is None:
+        print(c("格式: python cli.py login <zai|bigmodel> [--no-browser]", "red"))
         return
-    flow = ZaiAuthFlow()
+    flow = ZaiAuthFlow(provider)
     try:
         flow_id, authorize_url = await flow.init()
     except Exception as err:  # noqa: BLE001
         print(c(f"❌ 登录初始化失败: {err}", "red"))
         return
 
-    print(c("\n✔ OAuth 初始化成功！请在浏览器中打开下面链接完成授权：", "green"))
+    print(c(f"\n✔ OAuth 初始化成功（{provider}）！请在浏览器中打开下面链接完成授权：", "green"))
     print(c(authorize_url, "blue"))
 
     if "--no-browser" not in args:
@@ -83,20 +85,27 @@ async def cmd_login(args: list[str]) -> None:
             continue
         status = data.get("status")
         if status == "ready":
-            access_token = (data.get("zai") or {}).get("access_token")
+            # 凭据在 data.zai / data.bigmodel 子对象；zcode JWT 恒为 data.token
             zcode_jwt = data.get("token")
+            access_token = (data.get(provider) or {}).get("access_token")
+            added = False
             if zcode_jwt:
-                acc = store.add_account("zai", "oauth-login", zcode_jwt)
+                acc = store.add_account(provider, "oauth-login", zcode_jwt)
                 print(c(f"\n✔ 已保存 Coding Plan JWT 账号: {acc.name} ({acc.id})", "green"))
                 await _cli_ingest_followup(acc)
-            if access_token:
+                added = True
+            if access_token and provider == "zai":
+                # API Key 兑换链仅 zai 通道存在（bigmodel 无对应兑换端点）
                 try:
                     key = await flow.exchange_api_key(access_token)
-                    acc_key = store.add_account("zai", "oauth-apikey", key)
+                    acc_key = store.add_account(provider, "oauth-apikey", key)
                     print(c(f"✔ 已兑换并保存 API Key: {key[:8]}...", "green"))
                     await _cli_ingest_followup(acc_key)
+                    added = True
                 except Exception as err:  # noqa: BLE001
                     print(c(f"⚠️ 兑换 API Key 失败: {err}", "yellow"))
+            if not added:
+                print(c("❌ 授权结果中未包含可用凭证", "red"))
             return
         if status == "failed":
             print(c("❌ 授权失败或被拒绝。", "red"))
@@ -185,7 +194,7 @@ def cmd_status() -> None:
 
 
 async def cmd_quota() -> None:
-    accounts = [a for a in store.list_accounts("zai") if a.mode == "jwt"]
+    accounts = [a for a in store.list_accounts() if a.mode == "jwt"]
     if not accounts:
         print(c("无 Coding Plan (JWT) 账号可查询额度。", "yellow"))
         return

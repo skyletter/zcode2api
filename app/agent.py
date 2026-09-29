@@ -72,12 +72,15 @@ def build_request(
     账号 status 保持 ACTIVE，不能靠状态推导路由，须显式指定）。
     """
     provider = account.provider
+    # Plan 通道判定：zai 与 bigmodel 的 OAuth(JWT) 账号共用同一 Coding Plan 通道
+    # （zcode.z.ai 代理端点——上游按 JWT 归属识别套餐，不按登录来源分流）。
+    plan_channel = account.uses_plan_channel() and not force_fallback
 
-    if provider == "zai":
-        if account.uses_plan_channel() and not force_fallback:
-            target_url = settings.UPSTREAM["zai"]
-            auth = {"Authorization": f"Bearer {account.jwt_token}"}
-        elif account.api_key:
+    if plan_channel:
+        target_url = settings.UPSTREAM["zai"]
+        auth = {"Authorization": f"Bearer {account.jwt_token}"}
+    elif provider == "zai":
+        if account.api_key:
             target_url = settings.UPSTREAM["zai_fallback"]
             auth = {"x-api-key": account.api_key}
         else:
@@ -90,7 +93,7 @@ def build_request(
     else:
         raise RuntimeError(f"未知提供商: {provider}")
 
-    if provider == "zai" and account.uses_plan_channel() and not force_fallback:
+    if plan_channel:
         # JWT 通道：全量身份头 + 追踪头（对齐官方客户端 pio + trace 头序）
         user_id = body_transform.jwt_user_id(account.jwt_token)
         model = body.get("model") if isinstance(body.get("model"), str) else None

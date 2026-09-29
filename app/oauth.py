@@ -1,6 +1,6 @@
-"""Z.AI OAuth 登录流程。
+"""ZCode OAuth 登录流程（zai 国际站 / bigmodel 智谱开放平台）。
 
-主要供 CLI `login zai` 使用：发起 OAuth → 轮询 → 兑换 API Key。
+主要供 CLI `login zai|bigmodel` 使用：发起 OAuth → 轮询 → 兑换 API Key。
 """
 
 from __future__ import annotations
@@ -11,10 +11,18 @@ import httpx
 
 from . import settings
 
+# 支持的登录来源；两者共用 zcode.z.ai 的 server-mediated 轮询流程
+PROVIDERS = ("zai", "bigmodel")
+
 
 class ZaiAuthFlow:
     """api_base / exchange_origin 可注入（测试指向 Mock 上游）；
     默认值来自 settings（其缺省又来自 constants 收口）。
+
+    provider: "zai"（国际站）/ "bigmodel"（国内智谱）——国内版同样走
+    `/oauth/cli/init` + `/oauth/cli/poll` 服务端中介轮询（授权结果按 flow_id
+    挂在服务端），无需回调地址，headless（NAS 容器）可直接登录。
+    轮询 ready 时凭据在 data.zai / data.bigmodel 子对象里，zcode JWT 恒为 data.token。
 
     官方 CLI 规范（对齐 zcode.cjs createZaiCliOAuthClient）：
     - init 仅带 Authorization: Bearer <pollToken> 与 Content-Type: application/json
@@ -22,7 +30,11 @@ class ZaiAuthFlow:
     不携带额外伪装头，避免上游服务端对 OAuth 会话产生异常的设备/上下文绑定限制。
     """
 
-    def __init__(self, api_base: str | None = None, exchange_origin: str | None = None) -> None:
+    def __init__(self, provider: str = "zai", api_base: str | None = None,
+                 exchange_origin: str | None = None) -> None:
+        if provider not in PROVIDERS:
+            raise ValueError(f"不支持的 OAuth provider: {provider}")
+        self.provider = provider
         self.api_base = api_base or settings.OAUTH_API_BASE
         self.exchange_origin = exchange_origin or settings.ZAI_EXCHANGE_ORIGIN
         self.poll_token = secrets.token_hex(32)
@@ -35,7 +47,7 @@ class ZaiAuthFlow:
                     "Authorization": f"Bearer {self.poll_token}",
                     "Content-Type": "application/json",
                 },
-                json={"provider": "zai"},
+                json={"provider": self.provider},
             )
         res.raise_for_status()
         data = res.json().get("data") or {}
@@ -54,7 +66,10 @@ class ZaiAuthFlow:
         return res.json().get("data") or {}
 
     async def exchange_api_key(self, access_token: str) -> str:
-        """OAuth access_token → 业务 token → 机构/项目 → API Key。"""
+        """OAuth access_token → 业务 token → 机构/项目 → API Key。
+
+        仅 zai 通道存在此兑换链；bigmodel 登录后直接用 zcode JWT（Plan 通道）。
+        """
         async with httpx.AsyncClient(timeout=30) as client:
             login = await client.post(
                 f"{self.exchange_origin}/api/auth/z/login",

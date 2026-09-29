@@ -351,7 +351,8 @@ async def _dispatch(req_id, body, incoming_headers, port, provider):
             logs.warn(req_id, f"账号 {account.name} 并发已满（{_inflight.get(account.id, 0)}/{limit}），切换下一个")
             continue
         attempts += 1
-        needs_captcha = provider == "zai" and account.uses_plan_channel()
+        # Plan 通道（zai / bigmodel 的 JWT 账号）都需要阿里人机校验参数
+        needs_captcha = account.uses_plan_channel()
 
         slot_box: list[str | None] = [None]
         if limit > 0:
@@ -754,7 +755,7 @@ async def _safe_refresh(account: Account) -> None:
         live = store.find(account.provider, account.id)
         if live is None:
             return
-        if live.provider == "zai" and live.allows_billing():
+        if live.allows_billing():
             # 去抖：每条消息都刷 billing 是流量放大器（会加剧风控），与 monitor 共享
             # last_checked_at，最小间隔内的刷新直接跳过
             last = live.last_checked_at

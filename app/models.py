@@ -62,7 +62,9 @@ class Account:
     @staticmethod
     def create(provider: str, name: str, secret: str) -> Account:
         secret = (secret or "").strip()
-        is_jwt = secret.count(".") == 2 and provider == "zai"
+        # 三段点分（a.b.c）= zcode JWT：zai / bigmodel 的 OAuth 登录都产出 JWT；
+        # 两段点分（<id>.<secret>）是各平台 API Key，不误判。
+        is_jwt = secret.count(".") == 2 and provider in PROVIDERS
         return Account(
             id=_account_id(name),
             name=name or f"{provider}-account",

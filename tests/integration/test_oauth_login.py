@@ -273,3 +273,33 @@ class TestOAuthLoginFlow:
         assert any(p.endswith("/api_keys/copy/mock-api-key-id") for p in paths)
         # ready 后立即触发一次额度刷新（billing 三端点）
         assert any(p.endswith("/billing/current") for p in paths)
+
+    async def test_bigmodel_provider_pools_jwt_without_exchange(self, gateway_client):
+        """bigmodel（国内版）与 zai 共用 server-mediated 轮询：init 带 provider，
+        ready 后从 data.bigmodel 取凭据，JWT 入 bigmodel 池；
+        API Key 兑换链（zai 专属）不得被触发。"""
+        import json as _json
+
+        client, mock = gateway_client
+        zlogin_before = sum(1 for c in mock.state.calls if c[1] == "/api/auth/z/login")
+        start = (await client.post("/admin/api/login/start",
+                                   json={"label": "bm-1", "provider": "bigmodel"},
+                                   headers={"Authorization": "Bearer zcode"})).json()
+        init_call = next(c for c in reversed(mock.state.calls)
+                         if c[1].endswith("/oauth/cli/init"))
+        assert _json.loads(init_call[3])["provider"] == "bigmodel"
+
+        mock.state.oauth_state = "ready"
+        poll = (await client.get(f"/admin/api/login/poll/{start['flow_id']}",
+                                 headers={"Authorization": "Bearer zcode"})).json()
+        assert poll["status"] == "ready"
+        assert poll["account"]["provider"] == "bigmodel"
+        assert poll["account"]["mode"] == "jwt"
+
+        await _drain_login_followup()
+        # 兑换链只属于 zai：bigmodel 入池后台任务不得打 z/login
+        zlogin_after = sum(1 for c in mock.state.calls if c[1] == "/api/auth/z/login")
+        assert zlogin_after == zlogin_before
+        accounts = (await client.get("/admin/api/accounts",
+                                     headers={"Authorization": "Bearer zcode"})).json()
+        assert any(a["provider"] == "bigmodel" for a in accounts["accounts"])

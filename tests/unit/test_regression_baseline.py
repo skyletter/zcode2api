@@ -89,6 +89,19 @@ class TestAccountStateMachine:
         acc = Account.create("zai", "t", "not-a-jwt")
         assert acc.mode == "apiKey"
 
+    def test_bigmodel_three_segment_is_jwt(self):
+        """国内版 OAuth 登录产出 zcode JWT（三段点分）；bigmodel 池同样按 JWT 识别。"""
+        acc = Account.create("bigmodel", "t", "h1.eyJzdWIiOiJhIn0.sig")
+        assert acc.mode == "jwt"
+        assert acc.jwt_token == "h1.eyJzdWIiOiJhIn0.sig"
+        assert acc.uses_plan_channel()
+
+    def test_bigmodel_two_segment_is_apikey(self):
+        """智谱 API Key 形态（<id>.<secret> 两段点分）不误判为 JWT。"""
+        acc = Account.create("bigmodel", "t", "abc123.def456")
+        assert acc.mode == "apiKey"
+        assert acc.api_key == "abc123.def456"
+
     def test_selectable_default(self):
         assert self._acc().is_selectable()
 
@@ -221,6 +234,22 @@ class TestBuildRequest:
         url, headers, _payload = build_request(acc, {}, None)
         assert url == "https://api.z.ai/api/anthropic/v1/messages"
         assert headers["x-api-key"] == "plain-key"
+
+    def test_bigmodel_jwt_routes_to_plan_channel(self):
+        """国内版 OAuth 账号（bigmodel + JWT）与国际版共用 zcode Plan 通道。"""
+        from app.agent import build_request
+        acc = Account.create("bigmodel", "t", "a.b.c")
+        url, headers, _payload = build_request(acc, {}, None)
+        assert url == "https://zcode.z.ai/api/v1/zcode-plan/anthropic/v1/messages"
+        assert headers["Authorization"] == "Bearer a.b.c"
+        assert headers["X-Title"] == "Z Code@electron"  # 同一套官方客户端身份头
+
+    def test_bigmodel_apikey_routes_to_bigmodel_upstream(self):
+        from app.agent import build_request
+        acc = Account.create("bigmodel", "t", "abc123.def456")
+        url, headers, _payload = build_request(acc, {}, None)
+        assert url == "https://open.bigmodel.cn/api/anthropic/v1/messages"
+        assert headers["x-api-key"] == "abc123.def456"
 
     def test_invalid_jwt_with_apikey_routes_to_fallback(self):
         from app.agent import build_request
