@@ -375,7 +375,8 @@ async def _dispatch(req_id, body, incoming_headers, port, provider):
             logs.warn(req_id, f"账号 {account.name} 并发已满（{_inflight.get(account.id, 0)}/{limit}），切换下一个")
             continue
         attempts += 1
-        # Plan 通道（zai / bigmodel 的 JWT 账号）都需要阿里人机校验参数
+        # Plan 通道（zai / bigmodel 的 JWT 账号）可能需要阿里人机校验参数：
+        # 惰性模式——首投不带参数，仅上游挑战时才取（见 _try_account）
         needs_captcha = account.uses_plan_channel()
 
         slot_box: list[str | None] = [None]
@@ -533,7 +534,8 @@ async def _try_account(req_id, account, body, incoming_headers, port, needs_capt
     """尝试用单个账号转发，含验证码续期与可配置重试。
 
     错误处理策略（参数见 settings，均可用环境变量调整）：
-      - 验证码挑战：清池换码重建请求，最多 MAX_CAPTCHA_RETRIES 次
+      - 验证码挑战：**惰性取码**——首投不带参数，被挑战才取参数重建请求
+        （最多 MAX_CAPTCHA_RETRIES 次）；挑战发生在已带参数的请求上时清池重解
       - 429 频控：**不冷却账号**，按上游 Retry-After（封顶 RETRY_429_WAIT_MAX）
         或 RETRY_429_WAIT 等待后原地重试，最多 RETRY_429_TIMES 次；
         耗尽后换下一个账号，账号保持可用。Plan 通道耗尽且有 API Key 时切
@@ -553,7 +555,11 @@ async def _try_account(req_id, account, body, incoming_headers, port, needs_capt
         attempt_t0 = time.time()
         reqlog.mark_account(req_id, account.name, account.mode)
         verify_param = verify_region = None
-        if needs_captcha:
+        # 惰性验证码（2026-09-29 上游 3.14.4「关闭模型请求验证码校验」）：首投不带
+        # 参数直接发，仅当上游仍挑战（captcha_retries > 0）才取参数重试。避免把求解器
+        # 变成对话链路的硬依赖——求解失败不得挡住本可直接成功的请求。
+        # 领取（claim）不受影响，仍走验证码农场（claim.py）。
+        if needs_captcha and captcha_retries > 0:
             _park_slot(slot_box)
             try:
                 verify_param, verify_region = await captcha_manager.get_verify_param(port)
@@ -600,10 +606,13 @@ async def _try_account(req_id, account, body, incoming_headers, port, needs_capt
             await cm.__aexit__(None, None, None)
             await client.aclose()
 
-            # 验证码挑战：三形态任一命中即清池重试（不改账号状态）
+            # 验证码挑战：三形态任一命中即重试（不改账号状态）
             challenge = _detect_captcha_challenge(resp, text) if needs_captcha else None
             if challenge:
-                captcha_manager.invalidate()
+                if captcha_retries > 0:
+                    # 已带参数仍被挑战 → 池内参数被判失效，清池重解；
+                    # 首投（无参数）被挑战只说明"需要参数"，不得误清池。
+                    captcha_manager.invalidate()
                 captcha_retries += 1
                 if captcha_retries >= MAX_CAPTCHA_RETRIES:
                     account.record_result(False, "验证码挑战连续失败")

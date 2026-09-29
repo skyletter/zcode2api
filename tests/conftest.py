@@ -92,8 +92,10 @@ class _StubCaptcha:
 
     def __init__(self) -> None:
         self.invalidated = 0
+        self.solve_calls = 0  # 取码次数（断言惰性验证码：未挑战不得取码）
 
     async def get_verify_param(self, port: int | None = None) -> tuple[str, str | None]:
+        self.solve_calls += 1
         return "mock-verify-param", None
 
     def invalidate(self) -> None:

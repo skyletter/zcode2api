@@ -58,7 +58,7 @@ token 交换: zcode.z.ai/api/v1/oauth/token
 业务侧:    bigmodel.cn 域（getCustomerInfo / api_keys），API 形态同 zai
 ```
 
-## 3. 对话请求（Plan 通道，start-plan 需验证码）
+## 3. 对话请求（Plan 通道；2026-09-29 上游 3.14.4 起「关闭模型请求验证码校验」）
 
 ```http
 POST https://zcode.z.ai/api/v1/zcode-plan/anthropic/v1/messages
@@ -71,9 +71,11 @@ X-ZCode-Agent: glm
 HTTP-Referer: https://zcode.z.ai/
 X-Title: Z Code@{sourceTitle}
 X-Device-Mid: {uuidv4，首次生成永久复用}
-X-Aliyun-Captcha-Verify-Param: {verifyParam}        # start-plan 必需
+X-Aliyun-Captcha-Verify-Param: {verifyParam}        # 惰性：仅上游挑战（3007）后随重试携带
 X-Aliyun-Captcha-Region: {region}
 ```
+
+网关策略：模型请求按**惰性验证码**处理（首投不带参，被挑战再取码重试，见 `gateway.py _try_account`）；**领取（claim）仍必须验证码**（`claim.py` 走验证码农场）。
 
 Body：标准 Anthropic Messages（`model/max_tokens/stream/system/messages`）。上游模型名**大小写敏感**（`GLM-5.2`、`GLM-5-Turbo`）。
 
