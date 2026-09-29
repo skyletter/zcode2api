@@ -77,6 +77,26 @@ def _normalize_body(body: dict) -> dict:
     return body
 
 
+def _pool_has_selectable(provider: str) -> bool:
+    return any(a.is_selectable() for a in store.list_accounts(provider))
+
+
+def _advertised_models() -> list[str]:
+    """按账号池动态给出可路由的模型名（与 _detect_provider 的约定自洽）。
+
+    zai 池有可用账号 → 裸名（默认路由即进 zai 池）；
+    bigmodel 池有可用账号 → `bigmodel/` 前缀名（前缀是进 bigmodel 池的唯一路由依据）。
+    客户端（如 new-api）从 /v1/models 拉取后可直接使用，无需手工加前缀。
+    两池都空时退回裸名清单（保持既有客户端配置可用，账号恢复后即生效）。
+    """
+    models: list[str] = []
+    if _pool_has_selectable("zai"):
+        models += list(AVAILABLE_MODELS)
+    if _pool_has_selectable("bigmodel"):
+        models += [f"bigmodel/{m}" for m in AVAILABLE_MODELS]
+    return models or list(AVAILABLE_MODELS)
+
+
 def _is_captcha_error(text: str) -> bool:
     low = text.lower()
     return "captcha" in low or "verify token" in low or "verify failed" in low
@@ -172,12 +192,16 @@ def _last_user_text(body: dict) -> str:
 
 @router.get("/v1/models", dependencies=[Depends(verify_gateway_key)])
 async def list_models():
-    """列出可用模型（Anthropic /v1/models 风格）。"""
+    """列出当前可路由的模型名（Anthropic /v1/models 风格）。
+
+    模型名即路由依据：裸名走 zai 池，`bigmodel/` 前缀走 bigmodel 池；
+    清单按池动态生成（见 _advertised_models），拉取即可直接使用。
+    """
     return {
         "object": "list",
         "data": [
             {"id": i, "type": "model", "display_name": i, "created_at": "2025-01-01T00:00:00Z"}
-            for i in AVAILABLE_MODELS
+            for i in _advertised_models()
         ],
     }
 

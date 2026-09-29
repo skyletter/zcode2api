@@ -335,7 +335,20 @@ class TestGatewayHTTP:
         res = await client.get("/v1/models")
         assert res.status_code == 200
         ids = [m["id"] for m in res.json()["data"]]
+        # 空池兜底：公布裸名清单（账号恢复后按池动态生成）
         assert ids == ["GLM-5.3-Flash", "GLM-5.3"]
+
+    async def test_models_endpoint_announces_bigmodel_prefix(self, gateway_client, fresh_app):
+        """bigmodel 池有账号时公布带前缀的模型名——前缀即路由依据，拉取即可直接用。"""
+        client, _ = gateway_client
+        fresh_app.add_account("bigmodel", "bm", "h1.eyJzdWIiOiJhIn0.sig")
+        ids = [m["id"] for m in (await client.get("/v1/models")).json()["data"]]
+        assert ids == ["bigmodel/GLM-5.3-Flash", "bigmodel/GLM-5.3"]
+
+        fresh_app.add_account("zai", "za", "h2.eyJzdWIiOiJiIn0.sig")
+        ids = [m["id"] for m in (await client.get("/v1/models")).json()["data"]]
+        assert ids == ["GLM-5.3-Flash", "GLM-5.3",
+                       "bigmodel/GLM-5.3-Flash", "bigmodel/GLM-5.3"]
 
     async def test_messages_ok(self, gateway_client):
         client, upstream = gateway_client

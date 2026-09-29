@@ -19,7 +19,7 @@
 { "object": "list", "data": [ { "id": "GLM-5.3-Flash", "type": "model", "display_name": "GLM-5.3-Flash", "created_at": "…" }, ... ] }
 ```
 
-模型清单来自 `constants.AVAILABLE_MODELS`（按账号实际余额窗口公布，当前 `GLM-5.3-Flash` / `GLM-5.3`）。
+模型清单来自 `constants.AVAILABLE_MODELS`，按账号池动态生成：zai 池有可用账号给裸名（`GLM-5.3-Flash` / `GLM-5.3`），bigmodel 池有可用账号给 `bigmodel/` 前缀名（前缀即路由依据，客户端拉取即可直接使用）；两池都空时退回裸名清单。
 
 ### 1.3 `POST /v1/chat/completions`（OpenAI 兼容）
 
